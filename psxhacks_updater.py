@@ -2,13 +2,17 @@
 
 Usage model: place the EXE in the directory where psxhacks should live
 (psxhacks itself ends up in a "psxhacks" subfolder next to it). On launch
-it shows a branch dropdown and a status/log view; it checks whether an
-update is available for whichever branch is selected and enables an
-Install/Update button only when there's something to do. Clicking that
-button asks for confirmation, then applies it. Changing the branch
-dropdown re-checks against the newly-selected branch. See each imported
-module's own docstring for how its piece of this actually works -- this
-file is just orchestration wiring them together.
+it fetches the real branch list from GitHub and shows a branch dropdown
+plus a status/log view; it checks whether an update is available for
+whichever branch is selected and enables an Install/Update button only
+when there's something to do, plus an always-available Reinstall button
+for forcing a full fresh sync regardless, and a History button to browse
+that branch's commits and jump to any one of them (an upgrade or a
+downgrade). Changing the branch dropdown re-checks against the
+newly-selected branch, warning if it isn't one of the two officially
+supported ones. See each imported module's own docstring for how its
+piece of this actually works -- this file is just orchestration wiring
+them together.
 """
 import argparse
 import pathlib
@@ -16,20 +20,15 @@ import sys
 
 import pu_gui
 import pu_manifest
-import pu_override
 import pu_selfupdate
 import pu_sync
-import pu_venvcheck
 
-# (branch ref, dropdown label) -- "testing" is friendlier than exposing the
-# real "public-testing" branch name in the UI.
-BRANCH_CHOICES = [("main", "main"), ("public-testing", "testing")]
-BRANCH_BY_LABEL = dict((label, branch) for branch, label in BRANCH_CHOICES)
-LABEL_BY_BRANCH = dict(BRANCH_CHOICES)
+RECOMMENDED_BRANCHES = {"main", "testing"}
+# Used only if GitHub's branch list can't be fetched at all (offline,
+# rate-limited, etc.) -- without this, a fetch failure would leave the
+# dropdown completely empty and the tool unusable.
+FALLBACK_BRANCHES = ["main", "testing"]
 DEFAULT_BRANCH = "main"
-
-OVERRIDE_FILENAME = "psxhacks-start-override.ps1"
-SETUP_VENV_SCRIPT_RELPATH = pathlib.Path("start_scripts") / "setup_python_venv.ps1"
 
 # Status strings for the directory itself, independent of any branch.
 STATUS_NOT_INSTALLED = "not_installed"
@@ -46,20 +45,26 @@ def _default_target_dir():
     return own_dir / "psxhacks"
 
 
-class Controller:
+class Controller:  # pylint: disable=too-many-instance-attributes
     """Drives the GUI: checks status, reacts to branch changes and clicks."""
 
     def __init__(self, gui, target_dir, current_exe_path):
         self.gui = gui
         self.target_dir = pathlib.Path(target_dir)
         self.current_exe_path = current_exe_path
+        self.branches = []  # populated by _after_list_branches()
+        self.current_branch = DEFAULT_BRANCH
         self.state = None  # set by _after_status(); see its docstring
 
         gui.bind_branch_changed(self.on_branch_changed)
         gui.bind_update_clicked(self.on_update_clicked)
+        gui.bind_reinstall_clicked(self.on_reinstall_clicked)
+        gui.bind_history_clicked(self.on_history_clicked)
+        gui.bind_history_switch_clicked(self.on_history_switch_clicked)
+        gui.bind_history_back_clicked(self.on_history_back_clicked)
 
     def start(self):
-        """Kick off the self-update check, then the first status check."""
+        """Kick off the self-update check, then the branch list, then status."""
         self.gui.set_status("Checking for a newer version of this tool...")
         self.gui.run_in_background(
             pu_selfupdate.check_and_apply, self.current_exe_path,
@@ -76,16 +81,34 @@ class Controller:
             return
 
         manifest = pu_manifest.load(self.target_dir) if self.target_dir.is_dir() else None
-        initial_branch = (manifest or {}).get("branch") or DEFAULT_BRANCH
-        self.gui.set_branch_options(
-            [label for _branch, label in BRANCH_CHOICES],
-            LABEL_BY_BRANCH.get(initial_branch, initial_branch))
-        self.refresh_status(initial_branch)
+        self.current_branch = (manifest or {}).get("branch") or DEFAULT_BRANCH
+        self.gui.set_status("Fetching branch list...")
+        self.gui.run_in_background(pu_sync.list_branches, on_done=self._after_list_branches)
 
-    # -- status check: read-only, safe to run any time, drives the button --
+    def _after_list_branches(self, branches, error):
+        if error is not None or not branches:
+            branches = list(FALLBACK_BRANCHES)
+        if self.current_branch not in branches:
+            # Whatever the manifest recorded should stay selectable even
+            # if the fetch didn't happen to include it (e.g. a branch
+            # since deleted upstream, or the fetch fell back to the
+            # minimal list above).
+            branches = [self.current_branch] + branches
+        self.branches = branches
+        self._render_branch_combo()
+        self.refresh_status(self.current_branch)
+
+    def _render_branch_combo(self):
+        """Restore the branch combo's values/selection after a page rebuild."""
+        self.gui.set_branch_options(self.branches, self.current_branch)
+
+    # -- status check: read-only, safe to run any time, drives the buttons --
 
     def refresh_status(self, branch):
+        self.current_branch = branch
         self.gui.set_update_button(enabled=False)
+        self.gui.set_reinstall_button(enabled=False)
+        self.gui.set_history_button(enabled=False)
         self.gui.set_branch_combo_enabled(False)
         self.gui.set_status("Checking status...")
         self.gui.clear_log()
@@ -112,12 +135,16 @@ class Controller:
         }
 
     def _after_status(self, result, error):
-        """Runs on the main thread. Updates self.state and the GUI to match."""
         self.gui.set_branch_combo_enabled(True)
         if error is not None:
             self.gui.show_error("Could not check status", str(error))
             return
         self.state = result
+        self._render_status()
+
+    def _render_status(self):
+        """Updates the status page from self.state. Main-thread only, no I/O."""
+        result = self.state
         status = result["status"]
 
         if status == STATUS_UNMANAGED:
@@ -127,18 +154,21 @@ class Controller:
                 "Rename or remove that folder, then run this tool again "
                 "to install psxhacks.")
             self.gui.set_update_button(enabled=False)
+            self.gui.set_reinstall_button(enabled=False)
+            self.gui.set_history_button(enabled=False)
             return
 
         if status == STATUS_NOT_INSTALLED:
-            label = LABEL_BY_BRANCH.get(result["branch"], result["branch"])
-            self.gui.set_status(f"psxhacks ({label}) is not installed yet.")
+            self.gui.set_status(f"psxhacks ({result['branch']}) is not installed yet.")
             self.gui.set_update_button(label="Install", enabled=True)
+            self.gui.set_reinstall_button(enabled=False)
+            self.gui.set_history_button(enabled=True)
             return
 
         # STATUS_MANAGED
         drifted = result["drifted"]
         remote_commit = result["remote_commit"]
-        branch_label = LABEL_BY_BRANCH.get(result["branch"], result["branch"])
+        branch = result["branch"]
         needs_update = bool(drifted) or remote_commit is not None
 
         if drifted:
@@ -152,119 +182,127 @@ class Controller:
                 "still work, it just can't tell in advance if one's needed.")
 
         if needs_update:
-            self.gui.set_status(f"Update available for {branch_label}.")
+            self.gui.set_status(f"Update available for {branch}.")
         else:
             commit = (result["manifest"].get("source_commit") or "?")[:8]
-            self.gui.set_status(f"Up to date ({branch_label} @ {commit}).")
+            self.gui.set_status(f"Up to date ({branch} @ {commit}).")
         self.gui.set_update_button(label="Update", enabled=needs_update)
+        # Always available while managed, even when nothing's actually
+        # new -- a deliberate "nuke and resync anyway" escape hatch.
+        self.gui.set_reinstall_button(enabled=True)
+        self.gui.set_history_button(enabled=True)
 
-    # -- user-driven actions --
+    # -- branch selection --
 
-    def on_branch_changed(self, branch_label):
-        self.refresh_status(BRANCH_BY_LABEL.get(branch_label, branch_label))
+    def on_branch_changed(self, branch):
+        if branch not in RECOMMENDED_BRANCHES:
+            self.gui.show_warning(
+                "Unsupported branch",
+                f"'{branch}' is not one of the officially supported branches "
+                f"(main, testing). It may be experimental, broken, or "
+                f"abandoned -- proceed with caution.")
+        self.refresh_status(branch)
 
-    def on_update_clicked(self, branch_label):
-        branch = BRANCH_BY_LABEL.get(branch_label, branch_label)
+    # -- install / update / reinstall --
+
+    def on_update_clicked(self, branch):
         if self.state is None:
             return
 
         if self.state["status"] == STATUS_NOT_INSTALLED:
-            message = f"Install psxhacks ({branch_label}) into:\n\n{self.target_dir}"
+            message = f"Install psxhacks ({branch}) into:\n\n{self.target_dir}"
         else:
             drifted = self.state.get("drifted") or []
             if drifted:
                 shown = "\n".join(drifted[:15]) + ("\n..." if len(drifted) > 15 else "")
                 message = (
                     f"{len(drifted)} local file(s) will be discarded and replaced:\n\n"
-                    f"{shown}\n\nSync to the latest {branch_label}?")
+                    f"{shown}\n\nSync to the latest {branch}?")
             else:
-                message = f"Update to the latest {branch_label}?"
+                message = f"Update to the latest {branch}?"
 
-        if not self.gui.ask_yes_no("Confirm", message):
-            self.gui.log("Cancelled -- nothing was changed.")
+        self._confirm_and_run(message, self._do_update, branch)
+
+    def on_reinstall_clicked(self, branch):
+        if self.state is None or self.state["status"] != STATUS_MANAGED:
             return
-
-        self.gui.set_update_button(enabled=False)
-        self.gui.set_branch_combo_enabled(False)
-        self.gui.set_status(f"Syncing psxhacks ({branch_label})...")
-        self.gui.run_in_background(
-            self._do_update, branch, on_done=self._after_update)
+        message = (
+            f"This discards your entire psxhacks folder and reinstalls "
+            f"{branch} from scratch:\n\n{self.target_dir}\n\nContinue?")
+        self._confirm_and_run(message, self._do_update, branch)
 
     def _do_update(self, branch):
         self.target_dir.parent.mkdir(parents=True, exist_ok=True)
         return pu_sync.sync(self.target_dir, branch)
 
+    # -- commit history --
+
+    def on_history_clicked(self, branch):
+        self.gui.set_update_button(enabled=False)
+        self.gui.set_reinstall_button(enabled=False)
+        self.gui.set_history_button(enabled=False)
+        self.gui.set_branch_combo_enabled(False)
+        self.gui.set_status(f"Fetching commit history for {branch}...")
+        self.gui.run_in_background(
+            pu_sync.list_commits, branch, on_done=self._after_list_commits)
+
+    def _after_list_commits(self, commits, error):
+        if error is not None:
+            self.gui.show_error("Could not fetch commit history", str(error))
+            self._render_status()
+            self.gui.set_branch_combo_enabled(True)
+            return
+        self.gui.show_history_page(commits)
+
+    def on_history_switch_clicked(self, commit_sha):
+        branch = self.current_branch
+        message = (
+            f"Discard your entire psxhacks folder and replace it with commit "
+            f"{commit_sha[:8]} from {branch}?\n\n"
+            f"This can be either an upgrade or a downgrade from what's "
+            f"currently installed:\n\n{self.target_dir}")
+        self._confirm_and_run(
+            message, self._do_switch_to_commit, branch, commit_sha, back_to_status=True)
+
+    def on_history_back_clicked(self):
+        self.gui.show_status_page()
+        self._render_branch_combo()
+        if self.state is not None:
+            self._render_status()
+
+    def _do_switch_to_commit(self, branch, commit_sha):
+        self.target_dir.parent.mkdir(parents=True, exist_ok=True)
+        return pu_sync.sync_to_commit(self.target_dir, branch, commit_sha)
+
+    # -- shared confirm-then-run-in-background plumbing --
+
+    def _confirm_and_run(self, message, func, *args, back_to_status=False):
+        if not self.gui.ask_yes_no("Confirm", message):
+            self.gui.log("Cancelled -- nothing was changed.")
+            return
+
+        if back_to_status:
+            self.gui.show_status_page()
+            self._render_branch_combo()
+
+        self.gui.set_update_button(enabled=False)
+        self.gui.set_reinstall_button(enabled=False)
+        self.gui.set_history_button(enabled=False)
+        self.gui.set_branch_combo_enabled(False)
+        self.gui.set_status("Syncing psxhacks...")
+        self.gui.run_in_background(func, *args, on_done=self._after_update)
+
     def _after_update(self, result, error):
         if error is not None:
             self.gui.show_error("Update failed", str(error))
-            self.refresh_status(self.state.get("branch", DEFAULT_BRANCH))
+            self.refresh_status(self.current_branch)
             return
 
         self.gui.log(f"Synced to {result.branch} @ {result.commit}.")
         if result.cleanup_warning:
             self.gui.log(f"Warning: {result.cleanup_warning}")
         self.gui.set_progress(1.0)
-
-        self.gui.set_status("Checking Python environment...")
-        self.gui.run_in_background(self._do_venv_check, on_done=self._after_venv_check)
-
-    # -- venv check: automatic after every successful install/update --
-
-    def _do_venv_check(self):
-        override_path = self.target_dir.parent / OVERRIDE_FILENAME
-        requirements_path = self.target_dir / "requirements.txt"
-        current_python = pu_override.get_variable_value(
-            override_path, pu_venvcheck.OVERRIDE_VARIABLE_NAME)
-
-        needs_setup, reason = pu_venvcheck.needs_setup(current_python, requirements_path)
-        if not needs_setup:
-            self.gui.log("Python environment OK.")
-            return
-
-        self.gui.log(f"Python environment needs attention: {reason}")
-        if not self.gui.ask_yes_no(
-                "Python setup needed",
-                "Your Python environment for psxhacks isn't ready "
-                f"({reason}).\n\nRun the setup wizard now? It opens in its "
-                "own window and will walk you through it."):
-            self.gui.log("Skipped Python setup -- psxhacks may not run correctly yet.")
-            return
-
-        setup_script = self.target_dir / SETUP_VENV_SCRIPT_RELPATH
-        if not setup_script.is_file():
-            self.gui.show_error("Setup script not found", f"Could not find {setup_script}.")
-            return
-
-        self.gui.set_status("Waiting for the Python setup wizard...")
-        new_python = pu_venvcheck.run_setup_wizard(setup_script)
-        if new_python is None:
-            self.gui.log("Python setup wizard did not complete successfully.")
-            return
-
-        self.gui.log(f"Python setup complete: {new_python}")
-        manual_line = pu_override.format_variable_line(
-            pu_venvcheck.OVERRIDE_VARIABLE_NAME, new_python)
-
-        if not override_path.is_file():
-            self.gui.show_error(
-                "Override file not found",
-                f"Could not find {override_path} to record the new Python path.\n\n"
-                f"Add this line to it by hand:\n{manual_line}")
-            return
-
-        if not pu_venvcheck.apply_new_venv(override_path, new_python):
-            self.gui.show_error(
-                "Could not update override file",
-                f"Could not find a $PsxhacksPython line in {override_path} to update.\n\n"
-                f"Add this line to it by hand:\n{manual_line}")
-            return
-
-        self.gui.log(f"Updated {override_path.name} with the new Python path.")
-
-    def _after_venv_check(self, _result, error):
-        if error is not None:
-            self.gui.show_error("Unexpected error", str(error))
-        self.refresh_status(self.state.get("branch", DEFAULT_BRANCH))
+        self.refresh_status(result.branch)
 
 
 def main():

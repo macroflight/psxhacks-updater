@@ -1,9 +1,11 @@
-"""Download a psxhacks branch ZIP and atomically swap it into place.
+"""Download a psxhacks branch/commit ZIP and atomically swap it into place.
 
-No git anywhere: GitHub serves any branch as a plain ZIP over HTTPS
-(.../archive/refs/heads/<branch>.zip), which makes this immune to upstream
-force-pushes by construction -- it is always a full, fresh snapshot, never
-a merge or rebase against local history.
+No git anywhere: GitHub serves any ref (branch name or commit SHA) as a
+plain ZIP over HTTPS, which makes syncing to a branch tip immune to
+upstream force-pushes by construction -- it is always a full, fresh
+snapshot, never a merge or rebase against local history. Syncing to a
+specific commit (sync_to_commit()) is exactly the same mechanism, just
+pinned to an exact SHA instead of "whatever a branch currently points at".
 """
 import dataclasses
 import os
@@ -16,8 +18,11 @@ import pu_github
 import pu_manifest
 
 _REPO = "macroflight/psxhacks"
-_COMMITS_URL = f"https://api.github.com/repos/{_REPO}/commits/{{branch}}"
-_ZIP_URL = f"https://github.com/{_REPO}/archive/refs/heads/{{branch}}.zip"
+_COMMIT_URL = f"https://api.github.com/repos/{_REPO}/commits/{{ref}}"
+_COMMITS_LIST_URL = f"https://api.github.com/repos/{_REPO}/commits"
+_BRANCHES_URL = f"https://api.github.com/repos/{_REPO}/branches?per_page=100"
+_ZIP_URL_FOR_BRANCH = f"https://github.com/{_REPO}/archive/refs/heads/{{branch}}.zip"
+_ZIP_URL_FOR_COMMIT = f"https://github.com/{_REPO}/archive/{{sha}}.zip"
 
 _OLD_SUFFIX = ".old"
 
@@ -47,11 +52,62 @@ class SwapFailedRecoverableError(SyncError):
 
 @dataclasses.dataclass
 class SyncResult:
-    """Outcome of a successful sync() call."""
+    """Outcome of a successful sync()/sync_to_commit() call."""
 
     commit: str
     branch: str
     cleanup_warning: str = None  # set if the old directory could not be removed
+
+
+def list_branches():
+    """Return the public repo's branch names, or [] on any GitHub error.
+
+    Capped at 100 (a single page) -- this is a hobby-scale repo with well
+    under that many branches; pagination can be added if that changes.
+    Callers should fall back to a hardcoded minimal list on an empty
+    result, rather than leaving the branch picker empty.
+    """
+    try:
+        data = pu_github.get_json(_BRANCHES_URL)
+    except pu_github.GitHubError:
+        return []
+    return [entry["name"] for entry in data if "name" in entry]
+
+
+def list_commits(branch, per_page=100):
+    """Return up to per_page recent commits on branch, newest first.
+
+    Each entry: sha, short_sha, author_name, author_date, committer_name,
+    committer_date, message (full), summary (first line only). Uses
+    GitHub's commit-list endpoint, which never includes per-commit
+    file-change stats (those only appear on the single-commit endpoint) --
+    so there's nothing to deliberately strip here. per_page is capped at
+    100 by the GitHub API; older history needs pagination, not
+    implemented. Raises pu_github.GitHubError on failure (unlike
+    list_branches(), since an empty commit list has no safe fallback --
+    callers should show the error rather than silently showing nothing).
+    """
+    url = f"{_COMMITS_LIST_URL}?sha={branch}&per_page={per_page}"
+    data = pu_github.get_json(url)
+    commits = []
+    for entry in data:
+        sha = entry["sha"]
+        info = entry.get("commit", {})
+        author = info.get("author") or {}
+        committer = info.get("committer") or {}
+        message = info.get("message") or ""
+        commits.append({
+            "sha": sha,
+            "short_sha": sha[:8],
+            "author_name": author.get("name", "?"),
+            "author_email": author.get("email", ""),
+            "author_date": author.get("date", ""),
+            "committer_name": committer.get("name", "?"),
+            "committer_date": committer.get("date", ""),
+            "message": message,
+            "summary": message.splitlines()[0] if message else "",
+        })
+    return commits
 
 
 def check_for_update(branch, known_commit):
@@ -64,7 +120,7 @@ def check_for_update(branch, known_commit):
     rate-limit note), never as an error.
     """
     try:
-        data = pu_github.get_json(_COMMITS_URL.format(branch=branch))
+        data = pu_github.get_json(_COMMIT_URL.format(ref=branch))
         latest = data["sha"]
     except (pu_github.GitHubError, KeyError, TypeError):
         return "unknown"
@@ -73,35 +129,39 @@ def check_for_update(branch, known_commit):
     return latest
 
 
-def _download_and_extract(branch, work_dir):
-    """Download branch's ZIP into work_dir and extract it.
+def _extract_and_swap(zip_url, branch, commit, target_dir):
+    """Download zip_url, extract it, build+save its manifest, and swap it in.
 
-    Returns (new_tree_dir, commit_sha). GitHub's archive always wraps its
-    content in exactly one top-level folder ("psxhacks-<branch>/", neither
-    real branch name -- main, public-testing -- contains a slash).
+    Shared by sync() and sync_to_commit() -- the only difference between
+    them is which zip_url/commit they already resolved before calling
+    this. See _swap_in() for the atomic-replace step's own documentation.
     """
-    try:
-        commit = pu_github.get_json(_COMMITS_URL.format(branch=branch))["sha"]
-    except (pu_github.GitHubError, KeyError, TypeError) as exc:
-        raise SyncError(f"Could not determine latest commit for {branch}: {exc}") from exc
+    target_dir = pathlib.Path(target_dir)
+    with tempfile.TemporaryDirectory(dir=target_dir.parent) as work_dir:
+        work_dir = pathlib.Path(work_dir)
+        zip_path = work_dir / "psxhacks.zip"
+        pu_github.download_to(zip_url, zip_path)
 
-    zip_path = work_dir / "psxhacks.zip"
-    pu_github.download_to(_ZIP_URL.format(branch=branch), zip_path)
+        extract_dir = work_dir / "extracted"
+        extract_dir.mkdir()
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                archive.extractall(extract_dir)
+        except zipfile.BadZipFile as exc:
+            raise SyncError(f"Downloaded file is not a valid ZIP archive: {exc}") from exc
 
-    extract_dir = work_dir / "extracted"
-    extract_dir.mkdir()
-    try:
-        with zipfile.ZipFile(zip_path) as archive:
-            archive.extractall(extract_dir)
-    except zipfile.BadZipFile as exc:
-        raise SyncError(f"Downloaded file is not a valid ZIP archive: {exc}") from exc
+        top_level = list(extract_dir.iterdir())
+        if len(top_level) != 1 or not top_level[0].is_dir():
+            raise SyncError(
+                f"Expected exactly one top-level folder in the archive, found: "
+                f"{[p.name for p in top_level]}")
+        new_tree = top_level[0]
 
-    top_level = list(extract_dir.iterdir())
-    if len(top_level) != 1 or not top_level[0].is_dir():
-        raise SyncError(
-            f"Expected exactly one top-level folder in the archive, found: "
-            f"{[p.name for p in top_level]}")
-    return top_level[0], commit
+        manifest = pu_manifest.build(new_tree, branch=branch, source_commit=commit)
+        pu_manifest.save(new_tree, manifest)
+        cleanup_warning = _swap_in(new_tree, target_dir)
+
+    return SyncResult(commit=commit, branch=branch, cleanup_warning=cleanup_warning)
 
 
 def _swap_in(new_tree, target_dir):
@@ -167,12 +227,24 @@ def sync(target_dir, branch):
     doesn't need to know why it was called. May raise
     SyncError/TargetInUseError/SwapFailedRecoverableError.
     """
-    target_dir = pathlib.Path(target_dir)
-    with tempfile.TemporaryDirectory(dir=target_dir.parent) as work_dir:
-        work_dir = pathlib.Path(work_dir)
-        new_tree, commit = _download_and_extract(branch, work_dir)
-        manifest = pu_manifest.build(new_tree, branch=branch, source_commit=commit)
-        pu_manifest.save(new_tree, manifest)
-        cleanup_warning = _swap_in(new_tree, target_dir)
+    try:
+        commit = pu_github.get_json(_COMMIT_URL.format(ref=branch))["sha"]
+    except (pu_github.GitHubError, KeyError, TypeError) as exc:
+        raise SyncError(f"Could not determine latest commit for {branch}: {exc}") from exc
+    zip_url = _ZIP_URL_FOR_BRANCH.format(branch=branch)
+    return _extract_and_swap(zip_url, branch, commit, target_dir)
 
-    return SyncResult(commit=commit, branch=branch, cleanup_warning=cleanup_warning)
+
+def sync_to_commit(target_dir, branch, commit_sha):
+    """Sync target_dir to the exact commit_sha (an upgrade or a downgrade).
+
+    branch is only recorded in the resulting manifest (so the branch
+    dropdown/status check still has something sensible to compare
+    against next time -- which will then correctly show "update
+    available" again, since commit_sha need not be branch's current
+    tip); it plays no role in resolving what to download, since
+    commit_sha already fully identifies it. May raise
+    SyncError/TargetInUseError/SwapFailedRecoverableError.
+    """
+    zip_url = _ZIP_URL_FOR_COMMIT.format(sha=commit_sha)
+    return _extract_and_swap(zip_url, branch, commit_sha, target_dir)
