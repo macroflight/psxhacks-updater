@@ -25,7 +25,13 @@ jobs:
         id: check
         shell: bash
         run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD -- psxhacks-updater.version)
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED=$(git diff --name-only HEAD~1 HEAD -- psxhacks-updater.version)
+          else
+            # Root commit -- nothing to diff against. Treat as changed so
+            # the very first push still produces a release.
+            CHANGED="psxhacks-updater.version"
+          fi
           echo "changed=$([ -n "$CHANGED" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Build and release
