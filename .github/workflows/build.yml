@@ -1,0 +1,49 @@
+name: Build psxhacks-updater EXE
+
+"on":
+  push:
+    branches: [main, testing]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.repository == 'macroflight/psxhacks-updater'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check whether the version file changed
+        id: check
+        shell: bash
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- psxhacks-updater.version)
+          echo "changed=$([ -n "$CHANGED" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and release
+        if: steps.check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m venv venv
+          .\venv\Scripts\pip install -r requirements.txt pyinstaller
+          .\venv\Scripts\pyinstaller --clean psxhacks-updater.spec
+          $version = (Get-Content psxhacks-updater.version -Raw).Trim()
+          $isMain = '${{ github.ref_name }}' -eq 'main'
+          $tag = "psxhacks-updater-v$version" + $(if ($isMain) { '' } else { '-testing' })
+          $args = @(
+            'release', 'create', $tag, 'dist\psxhacks-updater.exe',
+            '--title', "psxhacks-updater $version",
+            '--target', '${{ github.sha }}'
+          )
+          if (-not $isMain) { $args += '--prerelease' }
+          gh @args

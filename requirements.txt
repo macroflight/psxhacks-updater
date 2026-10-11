@@ -1,0 +1,8 @@
+# psxhacks-updater requirements
+# Install with: pip install -r requirements.txt
+#
+# tkinter ships with standard CPython on Windows and needs no separate
+# package here. Everything else used (urllib, zipfile, hashlib, shutil,
+# subprocess, tempfile, json, ssl) is stdlib too.
+
+packaging>=23
