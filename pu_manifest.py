@@ -10,6 +10,14 @@ __pycache__ directories and the manifest file itself are excluded from
 both build() and diff() -- load-bearing, since running any addon script
 creates __pycache__ the moment Python imports it, which would otherwise
 register as false "drift" immediately after a clean sync.
+
+File keys are always POSIX-style relative paths (forward slashes, via
+as_posix()) regardless of host OS, so the manifest is portable and
+diffable across machines. The psxhacks repo's own PowerShell consumer
+(start_scripts/functions.ps1's Test-PsxhacksManifest) must normalize its
+own (backslash) relative paths to match before comparing against these
+keys -- it once didn't, and every file in a subdirectory was misreported
+as "(added)" on every single checkout, however clean.
 """
 import datetime
 import hashlib
