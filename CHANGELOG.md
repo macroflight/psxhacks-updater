@@ -1,6 +1,6 @@
 # psxhacks-updater changelog
 
-## Unreleased
+## 0.2.0
 
 - Fix "certificate verify failed" errors talking to GitHub on freshly
   installed Windows machines. HTTPS is now verified by Windows' own
