@@ -66,6 +66,9 @@ should be reverted alongside this, since nothing calls that script anymore.
 
 ## Conventions
 
+- Target Python 3.13 (what CI builds the EXE with; `make` uses
+  `python3.13`, overridable with `make PYTHON=...`).
+
 - No git dependency anywhere in the shipped tool -- only plain HTTPS to
   GitHub's REST API and ZIP archive endpoints.
 - Branch names are fetched live from GitHub (`pu_sync.list_branches()`),
@@ -89,7 +92,7 @@ should be reverted alongside this, since nothing calls that script anymore.
 ## Testing
 
 ```
-make                                                    # venv in ~/.venv-test-psxhacks-updater/, then all tests
+make                                                    # Python 3.13 venv in ~/.venv-test-psxhacks-updater/, then all tests
 python3 -m unittest discover tests                      # everything, no venv
 python3 -m unittest tests.test_pu_sync                  # one module
 python3 -m unittest tests.test_pu_sync.TestListBranches.test_returns_names
