@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
 
@@ -89,8 +89,31 @@ should be reverted alongside this, since nothing calls that script anymore.
 ## Testing
 
 ```
-python3 -m unittest discover tests
+make                                                    # venv in ~/.venv-test-psxhacks-updater/, then all tests
+python3 -m unittest discover tests                      # everything, no venv
+python3 -m unittest tests.test_pu_sync                  # one module
+python3 -m unittest tests.test_pu_sync.TestListBranches.test_returns_names
 ```
+
+Tests never hit the network: they `mock.patch.object` the `pu_github`
+helpers (`get_json`, `download_to`, ...), so new network-touching code
+should go through `pu_github` to stay mockable.
 
 The tkinter GUI layer itself is not unit-tested (no display in CI); see
 `README.md`'s manual testing checklist for what that layer needs.
+
+## Building and releasing
+
+- The version lives only in `psxhacks-updater.version` (bundled into the
+  EXE as PyInstaller data; read back via `psxhacks_version.get_version()`,
+  which uses `sys._MEIPASS` when frozen). Bump it with `./release.py`
+  (`--minor`/`--major`), which never commits, tags, or pushes.
+- CI (`.github/workflows/build.yml`, Windows runner) builds
+  `psxhacks-updater.spec` and creates a GitHub Release only when a push to
+  `main` or `testing` changes the version file (or on manual dispatch).
+  Tags are `psxhacks-updater-v<version>` on `main` and
+  `psxhacks-updater-v<version>-testing` (a prerelease) on `testing`;
+  `pu_selfupdate.py` parses that tag prefix and uses `releases/latest`, so
+  it only ever sees non-prerelease `main` builds.
+- The only third-party runtime dependency is `packaging` (also listed as
+  PyInstaller hidden imports in the spec); everything else is stdlib.
