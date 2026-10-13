@@ -21,7 +21,6 @@ _REPO = "macroflight/psxhacks"
 _COMMIT_URL = f"https://api.github.com/repos/{_REPO}/commits/{{ref}}"
 _COMMITS_LIST_URL = f"https://api.github.com/repos/{_REPO}/commits"
 _BRANCHES_URL = f"https://api.github.com/repos/{_REPO}/branches?per_page=100"
-_ZIP_URL_FOR_BRANCH = f"https://github.com/{_REPO}/archive/refs/heads/{{branch}}.zip"
 _ZIP_URL_FOR_COMMIT = f"https://github.com/{_REPO}/archive/{{sha}}.zip"
 
 _OLD_SUFFIX = ".old"
@@ -88,26 +87,38 @@ def list_commits(branch, per_page=100):
     callers should show the error rather than silently showing nothing).
     """
     url = f"{_COMMITS_LIST_URL}?sha={branch}&per_page={per_page}"
-    data = pu_github.get_json(url)
-    commits = []
-    for entry in data:
-        sha = entry["sha"]
-        info = entry.get("commit", {})
-        author = info.get("author") or {}
-        committer = info.get("committer") or {}
-        message = info.get("message") or ""
-        commits.append({
-            "sha": sha,
-            "short_sha": sha[:8],
-            "author_name": author.get("name", "?"),
-            "author_email": author.get("email", ""),
-            "author_date": author.get("date", ""),
-            "committer_name": committer.get("name", "?"),
-            "committer_date": committer.get("date", ""),
-            "message": message,
-            "summary": message.splitlines()[0] if message else "",
-        })
-    return commits
+    return [_parse_commit(entry) for entry in pu_github.get_json(url)]
+
+
+def get_commit(ref):
+    """Return the commit ref (a branch name or SHA) points at, or raise.
+
+    Same dict shape as each list_commits() entry. The single-commit
+    endpoint also returns file-change stats; they're deliberately dropped
+    here, same as list_commits() never has them. Raises
+    pu_github.GitHubError on failure.
+    """
+    return _parse_commit(pu_github.get_json(_COMMIT_URL.format(ref=ref)))
+
+
+def _parse_commit(entry):
+    """Extract the fields this tool uses from a GitHub API commit object."""
+    sha = entry["sha"]
+    info = entry.get("commit", {})
+    author = info.get("author") or {}
+    committer = info.get("committer") or {}
+    message = info.get("message") or ""
+    return {
+        "sha": sha,
+        "short_sha": sha[:8],
+        "author_name": author.get("name", "?"),
+        "author_email": author.get("email", ""),
+        "author_date": author.get("date", ""),
+        "committer_name": committer.get("name", "?"),
+        "committer_date": committer.get("date", ""),
+        "message": message,
+        "summary": message.splitlines()[0] if message else "",
+    }
 
 
 def check_for_update(branch, known_commit):
@@ -129,13 +140,17 @@ def check_for_update(branch, known_commit):
     return latest
 
 
-def _extract_and_swap(zip_url, branch, commit, target_dir):
-    """Download zip_url, extract it, build+save its manifest, and swap it in.
+def _extract_and_swap(branch, commit, commit_info, target_dir):
+    """Download commit's ZIP, extract it, build+save its manifest, swap it in.
 
     Shared by sync() and sync_to_commit() -- the only difference between
-    them is which zip_url/commit they already resolved before calling
-    this. See _swap_in() for the atomic-replace step's own documentation.
+    them is how they resolved commit (and its commit_info metadata, or
+    None if unavailable) before calling this. Always downloads by exact
+    SHA, never by branch name, so the recorded source_commit is guaranteed
+    to be what's actually on disk even if the branch moves mid-sync. See
+    _swap_in() for the atomic-replace step's own documentation.
     """
+    zip_url = _ZIP_URL_FOR_COMMIT.format(sha=commit)
     target_dir = pathlib.Path(target_dir)
     with tempfile.TemporaryDirectory(dir=target_dir.parent) as work_dir:
         work_dir = pathlib.Path(work_dir)
@@ -157,7 +172,9 @@ def _extract_and_swap(zip_url, branch, commit, target_dir):
                 f"{[p.name for p in top_level]}")
         new_tree = top_level[0]
 
-        manifest = pu_manifest.build(new_tree, branch=branch, source_commit=commit)
+        manifest = pu_manifest.build(
+            new_tree, branch=branch, source_commit=commit,
+            source_commit_info=commit_info)
         pu_manifest.save(new_tree, manifest)
         cleanup_warning = _swap_in(new_tree, target_dir)
 
@@ -228,14 +245,13 @@ def sync(target_dir, branch):
     SyncError/TargetInUseError/SwapFailedRecoverableError.
     """
     try:
-        commit = pu_github.get_json(_COMMIT_URL.format(ref=branch))["sha"]
+        commit_info = get_commit(branch)
     except (pu_github.GitHubError, KeyError, TypeError) as exc:
         raise SyncError(f"Could not determine latest commit for {branch}: {exc}") from exc
-    zip_url = _ZIP_URL_FOR_BRANCH.format(branch=branch)
-    return _extract_and_swap(zip_url, branch, commit, target_dir)
+    return _extract_and_swap(branch, commit_info["sha"], commit_info, target_dir)
 
 
-def sync_to_commit(target_dir, branch, commit_sha):
+def sync_to_commit(target_dir, branch, commit_sha, commit_info=None):
     """Sync target_dir to the exact commit_sha (an upgrade or a downgrade).
 
     branch is only recorded in the resulting manifest (so the branch
@@ -243,8 +259,15 @@ def sync_to_commit(target_dir, branch, commit_sha):
     against next time -- which will then correctly show "update
     available" again, since commit_sha need not be branch's current
     tip); it plays no role in resolving what to download, since
-    commit_sha already fully identifies it. May raise
+    commit_sha already fully identifies it. commit_info (a list_commits()
+    entry, e.g. from the history page) is recorded in the manifest for
+    display; if not given, it's looked up, but a failed lookup isn't fatal
+    -- the manifest then just has the SHA. May raise
     SyncError/TargetInUseError/SwapFailedRecoverableError.
     """
-    zip_url = _ZIP_URL_FOR_COMMIT.format(sha=commit_sha)
-    return _extract_and_swap(zip_url, branch, commit_sha, target_dir)
+    if commit_info is None:
+        try:
+            commit_info = get_commit(commit_sha)
+        except (pu_github.GitHubError, KeyError, TypeError):
+            commit_info = None
+    return _extract_and_swap(branch, commit_sha, commit_info, target_dir)

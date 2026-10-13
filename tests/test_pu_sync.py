@@ -67,31 +67,87 @@ class TestListCommits(unittest.TestCase):
                 pu_sync.list_commits("main")
 
 
-class TestSyncToCommit(unittest.TestCase):
-    """sync_to_commit() uses the commit-specific archive URL, no lookup needed."""
+_COMMIT_PAYLOAD = {
+    "sha": "deadbeef12345678",
+    "commit": {
+        "author": {"name": "Mats Kronberg", "email": "m@example.com",
+                   "date": "2026-10-11T12:00:00Z"},
+        "committer": {"name": "Mats Kronberg", "date": "2026-10-11T12:05:00Z"},
+        "message": "router: fix thing\n\nLonger explanation here.",
+    },
+    # The single-commit endpoint also returns these; get_commit() drops them.
+    "files": [{"filename": "x.py"}],
+}
 
-    def test_downloads_commit_archive_and_records_it(self):
+
+class TestGetCommit(unittest.TestCase):
+    """get_commit() parses the single-commit endpoint like list_commits()."""
+
+    def test_parses_and_drops_file_stats(self):
+        with mock.patch.object(pu_github, "get_json", return_value=_COMMIT_PAYLOAD):
+            commit = pu_sync.get_commit("main")
+        self.assertEqual(commit["sha"], "deadbeef12345678")
+        self.assertEqual(commit["summary"], "router: fix thing")
+        self.assertEqual(commit["author_date"], "2026-10-11T12:00:00Z")
+        self.assertNotIn("files", commit)
+
+
+class TestSyncDownloads(unittest.TestCase):
+    """sync()/sync_to_commit() download by exact SHA and record commit info."""
+
+    def _fake_download(self, tmp, expected_sha):
+        def fake_download(url, dest_path):
+            self.assertIn(f"/archive/{expected_sha}.zip", url)
+            tree = pathlib.Path(tmp) / "fake_zip_root" / "psxhacks-x"
+            tree.mkdir(parents=True)
+            (tree / "marker.txt").write_text("content", encoding="utf-8")
+            with zipfile.ZipFile(dest_path, "w") as zf:
+                zf.write(tree / "marker.txt", "psxhacks-x/marker.txt")
+        return fake_download
+
+    def test_sync_downloads_resolved_sha_not_branch(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = pathlib.Path(tmp) / "psxhacks"
+            with mock.patch.object(pu_github, "get_json", return_value=_COMMIT_PAYLOAD), \
+                 mock.patch.object(pu_github, "download_to",
+                                   side_effect=self._fake_download(tmp, "deadbeef12345678")):
+                result = pu_sync.sync(target, "main")
+            self.assertEqual(result.commit, "deadbeef12345678")
+            manifest = pu_manifest.load(target)
+            self.assertEqual(manifest["source_commit"], "deadbeef12345678")
+            info = manifest["source_commit_info"]
+            self.assertEqual(info["sha"], "deadbeef12345678")
+            self.assertEqual(info["author_name"], "Mats Kronberg")
+            self.assertIn("Longer explanation here.", info["message"])
 
-            def fake_download(url, dest_path):
-                self.assertIn("/archive/deadbeef.zip", url)
-                extract_root = pathlib.Path(tmp) / "fake_zip_root"
-                tree = extract_root / "psxhacks-main"
-                tree.mkdir(parents=True)
-                (tree / "marker.txt").write_text("content", encoding="utf-8")
-                with zipfile.ZipFile(dest_path, "w") as zf:
-                    zf.write(tree / "marker.txt", "psxhacks-main/marker.txt")
-
-            with mock.patch.object(pu_github, "download_to", side_effect=fake_download):
-                result = pu_sync.sync_to_commit(target, "main", "deadbeef")
-
+    def test_sync_to_commit_uses_given_info_without_lookup(self):
+        info = {"sha": "deadbeef", "summary": "from history page"}
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "psxhacks"
+            with mock.patch.object(pu_github, "get_json") as mock_get_json, \
+                 mock.patch.object(pu_github, "download_to",
+                                   side_effect=self._fake_download(tmp, "deadbeef")):
+                result = pu_sync.sync_to_commit(target, "main", "deadbeef", commit_info=info)
+            mock_get_json.assert_not_called()
             self.assertEqual(result.commit, "deadbeef")
             self.assertEqual(result.branch, "main")
             self.assertTrue((target / "marker.txt").is_file())
             manifest = pu_manifest.load(target)
             self.assertEqual(manifest["source_commit"], "deadbeef")
             self.assertEqual(manifest["branch"], "main")
+            self.assertEqual(manifest["source_commit_info"], info)
+
+    def test_sync_to_commit_info_lookup_failure_is_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "psxhacks"
+            with mock.patch.object(pu_github, "get_json",
+                                   side_effect=pu_github.GitHubError("boom")), \
+                 mock.patch.object(pu_github, "download_to",
+                                   side_effect=self._fake_download(tmp, "deadbeef")):
+                pu_sync.sync_to_commit(target, "main", "deadbeef")
+            manifest = pu_manifest.load(target)
+            self.assertEqual(manifest["source_commit"], "deadbeef")
+            self.assertIsNone(manifest["source_commit_info"])
 
 
 class TestCheckForUpdate(unittest.TestCase):

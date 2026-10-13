@@ -21,13 +21,28 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 
+def format_commit_details(commit):
+    """Return a multi-line, git-log-like description of a commit dict.
+
+    commit is a pu_sync.list_commits()/get_commit() entry. Used by both the
+    history page's detail pane and the status page's installed-version pane.
+    """
+    return (
+        f"commit {commit['sha']}\n"
+        f"Author:    {commit['author_name']} <{commit['author_email']}>\n"
+        f"Date:      {commit['author_date']}\n"
+        f"Committer: {commit['committer_name']}\n"
+        f"Committer date: {commit['committer_date']}\n\n"
+        f"{commit['message']}\n")
+
+
 class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """The main window: status page, plus the commit-history page."""
 
     def __init__(self, title="psxhacks-updater"):
         self.root = tk.Tk()
         self.root.title(title)
-        self.root.geometry("620x440")
+        self.root.geometry("620x520")
         self.root.minsize(460, 320)
 
         self._queue = queue.Queue()
@@ -48,6 +63,7 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         self.status_label = None
         self.progress = None
         self.log_text = None
+        self.installed_text = None
         self.history_tree = None
         self.history_detail = None
         self.history_switch_button = None
@@ -87,7 +103,13 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=10, pady=(5, 5))
 
-        self.log_text = tk.Text(frame, height=12, state="disabled", wrap="word")
+        installed_frame = ttk.LabelFrame(frame, text="Installed version")
+        installed_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self.installed_text = tk.Text(
+            installed_frame, height=6, state="disabled", wrap="word")
+        self.installed_text.pack(fill="x", padx=5, pady=5)
+
+        self.log_text = tk.Text(frame, height=8, state="disabled", wrap="word")
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
     # -- history page --
@@ -204,17 +226,7 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         commit = self._history_commits_by_sha.get(selection[0])
         if commit is None:
             return
-        detail = (
-            f"commit {commit['sha']}\n"
-            f"Author:    {commit['author_name']} <{commit['author_email']}>\n"
-            f"Date:      {commit['author_date']}\n"
-            f"Committer: {commit['committer_name']}\n"
-            f"Committer date: {commit['committer_date']}\n\n"
-            f"{commit['message']}\n")
-        self.history_detail.config(state="normal")
-        self.history_detail.delete("1.0", "end")
-        self.history_detail.insert("1.0", detail)
-        self.history_detail.config(state="disabled")
+        _set_text(self.history_detail, format_commit_details(commit))
 
     def _handle_history_switch_clicked(self):
         selection = self.history_tree.selection()
@@ -310,6 +322,10 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
             self.log_text.config(state="disabled")
         self._invoke(append)
 
+    def set_installed_info(self, text):
+        """Replace the status page's installed-version pane contents."""
+        self._invoke(lambda: _set_text(self.installed_text, text))
+
     def clear_log(self):
         def clear():
             self.log_text.config(state="normal")
@@ -364,3 +380,11 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
 
     def mainloop(self):
         self.root.mainloop()
+
+
+def _set_text(widget, text):
+    """Replace a read-only tk.Text widget's contents. Main-thread only."""
+    widget.config(state="normal")
+    widget.delete("1.0", "end")
+    widget.insert("1.0", text)
+    widget.config(state="disabled")

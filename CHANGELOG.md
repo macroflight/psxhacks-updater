@@ -7,6 +7,12 @@
   certificate verifier (via `truststore`), which fetches missing root
   certificates on demand like a browser does, instead of only trusting
   roots already present in the Windows certificate store.
+- New **Installed version** box on the main page showing the installed
+  commit's ID, message, author and date. The commit details are now also
+  stored in the manifest at sync time; installs made by 0.1.2 and older
+  get them fetched from GitHub instead.
+- Updates now download the exact commit they checked, so the recorded
+  commit ID can't be wrong if someone pushes to the branch mid-update.
 
 ## 0.1.2
 

@@ -47,13 +47,21 @@ def _iter_files(tree_dir):
         yield path.relative_to(tree_dir).as_posix(), path
 
 
-def build(tree_dir, branch=None, source_commit=None):
-    """Return a fresh manifest dict for every tracked file under tree_dir."""
+def build(tree_dir, branch=None, source_commit=None, source_commit_info=None):
+    """Return a fresh manifest dict for every tracked file under tree_dir.
+
+    source_commit_info is the synced commit's metadata (a
+    pu_sync.get_commit() dict: message, author, date, ...), stored so the
+    installed version can be described without a GitHub round-trip. It's
+    optional: manifests written before it existed, or when the lookup
+    failed, only have source_commit.
+    """
     files = {rel: _sha256_of(abs_path) for rel, abs_path in _iter_files(tree_dir)}
     return {
         "schema_version": SCHEMA_VERSION,
         "branch": branch,
         "source_commit": source_commit,
+        "source_commit_info": source_commit_info,
         "synced_at_utc": datetime.datetime.now(datetime.timezone.utc)
         .isoformat(timespec="seconds"),
         "files": files,

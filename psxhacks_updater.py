@@ -18,6 +18,7 @@ import argparse
 import pathlib
 import sys
 
+import pu_github
 import pu_gui
 import pu_manifest
 import pu_selfupdate
@@ -55,6 +56,7 @@ class Controller:  # pylint: disable=too-many-instance-attributes
         self.branches = []  # populated by _after_list_branches()
         self.current_branch = DEFAULT_BRANCH
         self.state = None  # set by _after_status(); see its docstring
+        self.history_commits = {}  # sha -> commit dict, from the last history fetch
 
         gui.bind_branch_changed(self.on_branch_changed)
         gui.bind_update_clicked(self.on_update_clicked)
@@ -125,13 +127,23 @@ class Controller:  # pylint: disable=too-many-instance-attributes
             return {"status": STATUS_UNMANAGED}
 
         drifted = pu_manifest.diff(self.target_dir, manifest)
-        remote_commit = pu_sync.check_for_update(branch, manifest.get("source_commit"))
+        source_commit = manifest.get("source_commit")
+        remote_commit = pu_sync.check_for_update(branch, source_commit)
+        installed_commit = manifest.get("source_commit_info")
+        if installed_commit is None and source_commit:
+            # Manifest from before commit details were recorded (<= 0.1.2),
+            # or the lookup failed at sync time -- best-effort fetch now.
+            try:
+                installed_commit = pu_sync.get_commit(source_commit)
+            except (pu_github.GitHubError, KeyError, TypeError):
+                installed_commit = None
         return {
             "status": STATUS_MANAGED,
             "branch": branch,
             "manifest": manifest,
             "drifted": drifted,
             "remote_commit": remote_commit,
+            "installed_commit": installed_commit,
         }
 
     def _after_status(self, result, error):
@@ -146,6 +158,8 @@ class Controller:  # pylint: disable=too-many-instance-attributes
         """Updates the status page from self.state. Main-thread only, no I/O."""
         result = self.state
         status = result["status"]
+
+        self._render_installed_info()
 
         if status == STATUS_UNMANAGED:
             self.gui.set_status(
@@ -191,6 +205,28 @@ class Controller:  # pylint: disable=too-many-instance-attributes
         # new -- a deliberate "nuke and resync anyway" escape hatch.
         self.gui.set_reinstall_button(enabled=True)
         self.gui.set_history_button(enabled=True)
+
+    def _render_installed_info(self):
+        """Fill the installed-version pane from self.state. Main-thread only."""
+        result = self.state
+        status = result["status"]
+        if status == STATUS_NOT_INSTALLED:
+            text = "Nothing installed yet."
+        elif status == STATUS_UNMANAGED:
+            text = "Unknown -- this folder wasn't set up by this tool."
+        else:
+            manifest = result["manifest"]
+            installed = result.get("installed_commit")
+            header = (
+                f"Branch: {manifest.get('branch') or '?'}    "
+                f"Synced: {manifest.get('synced_at_utc') or '?'}\n")
+            if installed is not None:
+                text = header + pu_gui.format_commit_details(installed)
+            else:
+                text = header + (
+                    f"commit {manifest.get('source_commit') or '?'}\n"
+                    f"(commit details unavailable -- could not reach GitHub)\n")
+        self.gui.set_installed_info(text.rstrip("\n"))
 
     # -- branch selection --
 
@@ -252,6 +288,7 @@ class Controller:  # pylint: disable=too-many-instance-attributes
             self._render_status()
             self.gui.set_branch_combo_enabled(True)
             return
+        self.history_commits = {c["sha"]: c for c in commits}
         self.gui.show_history_page(commits)
 
     def on_history_switch_clicked(self, commit_sha):
@@ -272,7 +309,9 @@ class Controller:  # pylint: disable=too-many-instance-attributes
 
     def _do_switch_to_commit(self, branch, commit_sha):
         self.target_dir.parent.mkdir(parents=True, exist_ok=True)
-        return pu_sync.sync_to_commit(self.target_dir, branch, commit_sha)
+        return pu_sync.sync_to_commit(
+            self.target_dir, branch, commit_sha,
+            commit_info=self.history_commits.get(commit_sha))
 
     # -- shared confirm-then-run-in-background plumbing --
 

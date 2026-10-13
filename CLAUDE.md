@@ -26,12 +26,19 @@ end users, with no git client and no GitHub authentication required. See
   that branch's current tip -- syncing to an arbitrary historical commit
   (see History below) still records the branch it was browsed from, so
   the next status check correctly reports "update available" again.
+  Also stores `source_commit_info` (that commit's message/author/date, a
+  `pu_sync.get_commit()` dict) for the status page's "Installed version"
+  pane; it's optional -- manifests from <= 0.1.2 lack it, and the
+  controller then fetches it by SHA instead. The main repo's PowerShell
+  preflight only reads `files`, so extra top-level fields are safe.
 - `pu_sync.py` -- `list_branches()`/`list_commits()` (GitHub metadata
   listings -- the commit list deliberately excludes per-commit file-change
-  stats, since the list endpoint never returns them), `check_for_update()`
+  stats, since the list endpoint never returns them), `get_commit()`
+  (one commit's metadata, same dict shape), `check_for_update()`
   (cheap commit-SHA check, used to decide whether the Update button should
   be enabled), `sync()` (branch tip) and `sync_to_commit()` (an exact SHA,
-  upgrade or downgrade) -- both download a ZIP from GitHub, extract it, and
+  upgrade or downgrade) -- both download a ZIP of an exact commit SHA
+  (never a branch-name ZIP, so `source_commit` can't race a push), extract it, and
   atomically swap it in for the live checkout directory via the shared
   `_extract_and_swap()` helper. Always does the full thing; the controller
   decides when that's warranted, not this module.

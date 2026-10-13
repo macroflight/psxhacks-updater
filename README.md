@@ -15,7 +15,8 @@ client and no GitHub authentication required.
    **Install**/**Update** button only when there's actually something to
    do, plus an always-available **Reinstall** button for forcing a full
    fresh sync regardless. Changing the branch re-checks against the
-   newly-selected one.
+   newly-selected one. The **Installed version** box shows exactly which
+   commit you have (commit ID, message, author, date).
 4. **History...** opens a page listing that branch's recent commits (date,
    author, message) and lets you switch straight to any one of them --
    an upgrade or a downgrade, your choice.
@@ -87,14 +88,18 @@ manual testing on a real Windows machine:
 7. Open a file inside the target folder (e.g. in Notepad) and click
    Update -- confirm a clear "close open files" message, not a raw
    exception, and that nothing was left half-replaced.
-8. Click History -- confirm the commit list loads (date/author/summary per
+8. After an install, confirm the "Installed version" box shows the
+   commit ID, author, date and message. Run against a checkout synced by
+   0.1.2 (no commit details in its manifest) -- the box should still fill
+   in (fetched from GitHub), or say details are unavailable when offline.
+9. Click History -- confirm the commit list loads (date/author/summary per
    row) and selecting a row shows its full message in the detail pane
    with no file-change list. Pick an older commit and switch to it --
    confirm it installs, and that re-checking status now shows an update
    is available again (since you're intentionally behind the branch tip).
-9. Publish a newer test release of this tool itself, run the current EXE
+10. Publish a newer test release of this tool itself, run the current EXE
    -- confirm it downloads the new one, hands off, and relaunches with the
    old EXE file actually replaced on disk.
-10. Run a `start_*.ps1` in the main repo against a drifted checkout --
+11. Run a `start_*.ps1` in the main repo against a drifted checkout --
     confirm `Show-ErrorAndExit` lists the right files; confirm a
     `stop_*.ps1` is *not* blocked by the same drift.
