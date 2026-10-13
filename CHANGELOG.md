@@ -1,5 +1,19 @@
 # psxhacks-updater changelog
 
+## Unreleased
+
+- New **Check for updates** button to re-check for updates on demand.
+  Previously the tool only checked at startup and on branch changes, so
+  if left open it kept saying "Up to date" after new commits were pushed.
+  Returning from the History page now re-checks too.
+- "Update available" now says which commit is installed and which is the
+  latest.
+- The **Installed version** box is bigger and scrollable, so the commit
+  message is actually visible; the log and History detail panes got
+  scrollbars too.
+- Fix the window freezing (no further updates) after cancelling "Switch
+  to this commit" on the History page.
+
 ## 0.2.0
 
 - Fix "certificate verify failed" errors talking to GitHub on freshly

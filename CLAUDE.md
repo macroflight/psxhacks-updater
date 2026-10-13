@@ -14,11 +14,12 @@ end users, with no git client and no GitHub authentication required. See
 
 - `psxhacks_updater.py` -- entry point and the `Controller` class, which
   drives the GUI: computes directory/update status (on a background
-  thread) and reacts to the branch dropdown and the Install/Update/
-  Reinstall/History buttons (see `pu_gui.py`). Status is recomputed on
-  every branch change and after every completed action; nothing happens
-  automatically beyond the self-update check and the initial branch-list
-  fetch at startup.
+  thread) and reacts to the branch dropdown and the Check for updates/
+  Install/Update/Reinstall/History buttons (see `pu_gui.py`). Status is
+  recomputed on every branch change, on Check for updates, on returning
+  from the History page, and after every completed action; nothing
+  happens automatically beyond the self-update check and the initial
+  branch-list fetch at startup.
 - `pu_manifest.py` -- builds/loads/diffs `.psxhacks-manifest.json`, the
   SHA256-per-file manifest written into the managed `psxhacks` checkout
   after every successful sync. This (not git) is how drift is detected.
@@ -51,8 +52,8 @@ end users, with no git client and no GitHub authentication required. See
   latter fails on fresh Windows installs whose root store hasn't yet
   been populated on demand -- don't switch back.
 - `pu_gui.py` -- tkinter multi-page wizard shell: the status page (branch
-  dropdown, status/progress/log, Install/Update/Reinstall/History
-  buttons) and the history page (a `Treeview` of commits plus a detail
+  dropdown, status/progress, installed-version pane, log, Check for
+  updates/Install/Update/Reinstall/History buttons) and the history page (a `Treeview` of commits plus a detail
   pane and a "Switch to this commit" button). Structured for more pages
   to be added later (a planned guided master/slave sim setup flow), not
   as a single fixed-purpose window. Its thread-bridging methods

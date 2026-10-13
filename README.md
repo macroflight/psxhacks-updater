@@ -15,7 +15,9 @@ client and no GitHub authentication required.
    **Install**/**Update** button only when there's actually something to
    do, plus an always-available **Reinstall** button for forcing a full
    fresh sync regardless. Changing the branch re-checks against the
-   newly-selected one. The **Installed version** box shows exactly which
+   newly-selected one; **Check for updates** re-checks on demand (e.g.
+   when the tool has been left open for a while), as does returning from
+   the History page. The **Installed version** box shows exactly which
    commit you have (commit ID, message, author, date).
 4. **History...** opens a page listing that branch's recent commits (date,
    author, message) and lets you switch straight to any one of them --
@@ -76,6 +78,8 @@ manual testing on a real Windows machine:
    "up to date"); Reinstall and History become enabled.
 3. Run again on the same, now-clean checkout -- Update stays disabled
    until something changes upstream; Reinstall stays enabled regardless.
+   Leave it open, push a commit upstream, click **Check for updates** --
+   status should switch to "Update available (installed X, latest Y)".
 4. Switch the branch dropdown to something other than main/testing --
    confirm the warning dialog appears, and that the status check still
    proceeds afterward.
@@ -89,7 +93,8 @@ manual testing on a real Windows machine:
    Update -- confirm a clear "close open files" message, not a raw
    exception, and that nothing was left half-replaced.
 8. After an install, confirm the "Installed version" box shows the
-   commit ID, author, date and message. Run against a checkout synced by
+   commit ID, author, date and message without scrolling at the default
+   window size, with a scrollbar for longer messages. Run against a checkout synced by
    0.1.2 (no commit details in its manifest) -- the box should still fill
    in (fetched from GitHub), or say details are unavailable when offline.
 9. Click History -- confirm the commit list loads (date/author/summary per

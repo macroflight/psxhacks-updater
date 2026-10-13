@@ -59,6 +59,7 @@ class Controller:  # pylint: disable=too-many-instance-attributes
         self.history_commits = {}  # sha -> commit dict, from the last history fetch
 
         gui.bind_branch_changed(self.on_branch_changed)
+        gui.bind_check_clicked(self.on_check_clicked)
         gui.bind_update_clicked(self.on_update_clicked)
         gui.bind_reinstall_clicked(self.on_reinstall_clicked)
         gui.bind_history_clicked(self.on_history_clicked)
@@ -104,14 +105,22 @@ class Controller:  # pylint: disable=too-many-instance-attributes
         """Restore the branch combo's values/selection after a page rebuild."""
         self.gui.set_branch_options(self.branches, self.current_branch)
 
-    # -- status check: read-only, safe to run any time, drives the buttons --
-
-    def refresh_status(self, branch):
-        self.current_branch = branch
+    def _disable_actions(self):
+        """Disable every button and the branch dropdown while work runs."""
+        self.gui.set_check_button(enabled=False)
         self.gui.set_update_button(enabled=False)
         self.gui.set_reinstall_button(enabled=False)
         self.gui.set_history_button(enabled=False)
         self.gui.set_branch_combo_enabled(False)
+
+    # -- status check: read-only, safe to run any time, drives the buttons --
+
+    def on_check_clicked(self, branch):
+        self.refresh_status(branch)
+
+    def refresh_status(self, branch):
+        self.current_branch = branch
+        self._disable_actions()
         self.gui.set_status("Checking status...")
         self.gui.clear_log()
         self.gui.run_in_background(
@@ -148,6 +157,7 @@ class Controller:  # pylint: disable=too-many-instance-attributes
 
     def _after_status(self, result, error):
         self.gui.set_branch_combo_enabled(True)
+        self.gui.set_check_button(enabled=True)
         if error is not None:
             self.gui.show_error("Could not check status", str(error))
             return
@@ -159,6 +169,7 @@ class Controller:  # pylint: disable=too-many-instance-attributes
         result = self.state
         status = result["status"]
 
+        self.gui.set_check_button(enabled=True)
         self._render_installed_info()
 
         if status == STATUS_UNMANAGED:
@@ -195,11 +206,15 @@ class Controller:  # pylint: disable=too-many-instance-attributes
                 "Could not check GitHub for updates (offline?) -- Update will "
                 "still work, it just can't tell in advance if one's needed.")
 
-        if needs_update:
+        installed = (result["manifest"].get("source_commit") or "?")[:8]
+        if remote_commit not in (None, "unknown"):
+            self.gui.set_status(
+                f"Update available for {branch} "
+                f"(installed {installed}, latest {remote_commit[:8]}).")
+        elif needs_update:
             self.gui.set_status(f"Update available for {branch}.")
         else:
-            commit = (result["manifest"].get("source_commit") or "?")[:8]
-            self.gui.set_status(f"Up to date ({branch} @ {commit}).")
+            self.gui.set_status(f"Up to date ({branch} @ {installed}).")
         self.gui.set_update_button(label="Update", enabled=needs_update)
         # Always available while managed, even when nothing's actually
         # new -- a deliberate "nuke and resync anyway" escape hatch.
@@ -221,7 +236,8 @@ class Controller:  # pylint: disable=too-many-instance-attributes
                 f"Branch: {manifest.get('branch') or '?'}    "
                 f"Synced: {manifest.get('synced_at_utc') or '?'}\n")
             if installed is not None:
-                text = header + pu_gui.format_commit_details(installed)
+                text = header + pu_gui.format_commit_details(
+                    installed, include_committer=False)
             else:
                 text = header + (
                     f"commit {manifest.get('source_commit') or '?'}\n"
@@ -274,10 +290,7 @@ class Controller:  # pylint: disable=too-many-instance-attributes
     # -- commit history --
 
     def on_history_clicked(self, branch):
-        self.gui.set_update_button(enabled=False)
-        self.gui.set_reinstall_button(enabled=False)
-        self.gui.set_history_button(enabled=False)
-        self.gui.set_branch_combo_enabled(False)
+        self._disable_actions()
         self.gui.set_status(f"Fetching commit history for {branch}...")
         self.gui.run_in_background(
             pu_sync.list_commits, branch, on_done=self._after_list_commits)
@@ -302,10 +315,11 @@ class Controller:  # pylint: disable=too-many-instance-attributes
             message, self._do_switch_to_commit, branch, commit_sha, back_to_status=True)
 
     def on_history_back_clicked(self):
+        # Re-check rather than re-render the last result: the history fetch
+        # may well have just shown commits newer than what's installed.
         self.gui.show_status_page()
         self._render_branch_combo()
-        if self.state is not None:
-            self._render_status()
+        self.refresh_status(self.current_branch)
 
     def _do_switch_to_commit(self, branch, commit_sha):
         self.target_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -324,10 +338,7 @@ class Controller:  # pylint: disable=too-many-instance-attributes
             self.gui.show_status_page()
             self._render_branch_combo()
 
-        self.gui.set_update_button(enabled=False)
-        self.gui.set_reinstall_button(enabled=False)
-        self.gui.set_history_button(enabled=False)
-        self.gui.set_branch_combo_enabled(False)
+        self._disable_actions()
         self.gui.set_status("Syncing psxhacks...")
         self.gui.run_in_background(func, *args, on_done=self._after_update)
 

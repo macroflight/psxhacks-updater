@@ -21,18 +21,22 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 
-def format_commit_details(commit):
+def format_commit_details(commit, include_committer=True):
     """Return a multi-line, git-log-like description of a commit dict.
 
     commit is a pu_sync.list_commits()/get_commit() entry. Used by both the
-    history page's detail pane and the status page's installed-version pane.
+    history page's detail pane and the status page's installed-version pane
+    (the latter without the committer lines, so the message itself is
+    visible without scrolling).
     """
+    committer = (
+        f"Committer: {commit['committer_name']}\n"
+        f"Committer date: {commit['committer_date']}\n") if include_committer else ""
     return (
         f"commit {commit['sha']}\n"
         f"Author:    {commit['author_name']} <{commit['author_email']}>\n"
         f"Date:      {commit['author_date']}\n"
-        f"Committer: {commit['committer_name']}\n"
-        f"Committer date: {commit['committer_date']}\n\n"
+        f"{committer}\n"
         f"{commit['message']}\n")
 
 
@@ -42,11 +46,12 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
     def __init__(self, title="psxhacks-updater"):
         self.root = tk.Tk()
         self.root.title(title)
-        self.root.geometry("620x520")
-        self.root.minsize(460, 320)
+        self.root.geometry("680x640")
+        self.root.minsize(520, 420)
 
         self._queue = queue.Queue()
         self._on_branch_changed = None
+        self._on_check_clicked = None
         self._on_update_clicked = None
         self._on_reinstall_clicked = None
         self._on_history_clicked = None
@@ -57,6 +62,7 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         self.content_frame.pack(fill="both", expand=True)
 
         self.branch_combo = None
+        self.check_button = None
         self.update_button = None
         self.reinstall_button = None
         self.history_button = None
@@ -83,6 +89,10 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         self.branch_combo.pack(side="left", padx=(5, 10))
         self.branch_combo.bind("<<ComboboxSelected>>", self._handle_branch_changed)
 
+        self.check_button = ttk.Button(
+            top_row, text="Check for updates", command=self._handle_check_clicked, state="disabled")
+        self.check_button.pack(side="left", padx=(0, 5))
+
         self.update_button = ttk.Button(
             top_row, text="Update", command=self._handle_update_clicked, state="disabled")
         self.update_button.pack(side="left", padx=(0, 5))
@@ -104,13 +114,12 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         self.progress.pack(fill="x", padx=10, pady=(5, 5))
 
         installed_frame = ttk.LabelFrame(frame, text="Installed version")
-        installed_frame.pack(fill="x", padx=10, pady=(0, 5))
-        self.installed_text = tk.Text(
-            installed_frame, height=6, state="disabled", wrap="word")
-        self.installed_text.pack(fill="x", padx=5, pady=5)
+        installed_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        self.installed_text = _scrolled_text(installed_frame, height=12)
+        self.installed_text.master.pack(fill="both", expand=True, padx=5, pady=5)
 
-        self.log_text = tk.Text(frame, height=8, state="disabled", wrap="word")
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.log_text = _scrolled_text(frame, height=6)
+        self.log_text.master.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
     # -- history page --
 
@@ -128,8 +137,8 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         self.history_tree.pack(fill="both", expand=True, padx=10, pady=(10, 5))
         self.history_tree.bind("<<TreeviewSelect>>", self._handle_history_row_selected)
 
-        self.history_detail = tk.Text(frame, height=8, state="disabled", wrap="word")
-        self.history_detail.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        self.history_detail = _scrolled_text(frame, height=8)
+        self.history_detail.master.pack(fill="both", expand=True, padx=10, pady=(0, 5))
 
         button_row = ttk.Frame(frame)
         button_row.pack(fill="x", padx=10, pady=(0, 10))
@@ -176,6 +185,11 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         different branch from the dropdown."""
         self._on_branch_changed = callback
 
+    def bind_check_clicked(self, callback):
+        """callback(branch) runs on the main thread when the "Check for
+        updates" button is clicked."""
+        self._on_check_clicked = callback
+
     def bind_update_clicked(self, callback):
         """callback(branch) runs on the main thread when the Install/Update
         button is clicked."""
@@ -205,6 +219,10 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
     def _handle_branch_changed(self, _event):
         if self._on_branch_changed:
             self._on_branch_changed(self.branch_combo.get())
+
+    def _handle_check_clicked(self):
+        if self._on_check_clicked:
+            self._on_check_clicked(self.branch_combo.get())
 
     def _handle_update_clicked(self):
         if self._on_update_clicked:
@@ -243,7 +261,14 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
         try:
             while True:
                 func = self._queue.get_nowait()
-                func()
+                try:
+                    func()
+                except tk.TclError:
+                    # Targets a widget from a page that has since been
+                    # destroyed (e.g. a log() while the history page is
+                    # shown). Drop it -- letting it propagate would skip the
+                    # reschedule below and freeze every later GUI update.
+                    pass
         except queue.Empty:
             pass
         self.root.after(100, self._drain_queue)
@@ -293,6 +318,12 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
                 self.update_button.configure(text=label)
             if enabled is not None:
                 self.update_button.configure(state="normal" if enabled else "disabled")
+        self._invoke(apply)
+
+    def set_check_button(self, enabled=None):
+        def apply():
+            if enabled is not None:
+                self.check_button.configure(state="normal" if enabled else "disabled")
         self._invoke(apply)
 
     def set_reinstall_button(self, enabled=None):
@@ -380,6 +411,20 @@ class UpdaterWindow:  # pylint: disable=too-many-instance-attributes,too-many-pu
 
     def mainloop(self):
         self.root.mainloop()
+
+
+def _scrolled_text(parent, height):
+    """Return a read-only, word-wrapped tk.Text with a vertical scrollbar.
+
+    Both live in a new frame (the Text's .master) that the caller packs.
+    """
+    holder = ttk.Frame(parent)
+    text = tk.Text(holder, height=height, state="disabled", wrap="word")
+    scrollbar = ttk.Scrollbar(holder, orient="vertical", command=text.yview)
+    text.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+    text.pack(side="left", fill="both", expand=True)
+    return text
 
 
 def _set_text(widget, text):
