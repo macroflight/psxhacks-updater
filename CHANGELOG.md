@@ -1,6 +1,6 @@
 # psxhacks-updater changelog
 
-## Unreleased
+## 0.2.1
 
 - New **Check for updates** button to re-check for updates on demand.
   Previously the tool only checked at startup and on branch changes, so
