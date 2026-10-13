@@ -6,3 +6,5 @@
 # subprocess, tempfile, json, ssl) is stdlib too.
 
 packaging>=23
+# HTTPS verification via the OS's own certificate verifier -- see pu_github.py.
+truststore>=0.10

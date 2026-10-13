@@ -9,6 +9,9 @@ a = Analysis(
     hiddenimports=[
         'packaging', 'packaging.requirements', 'packaging.specifiers',
         'packaging.version', 'packaging.markers',
+        # Imported conditionally on Windows by truststore; listed explicitly
+        # so a missed import can't silently break HTTPS in the frozen EXE.
+        'truststore', 'truststore._windows',
     ],
     hookspath=[],
     hooksconfig={},

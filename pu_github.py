@@ -1,9 +1,14 @@
 """Tiny GitHub REST/download helper shared by pu_sync.py and pu_selfupdate.py.
 
-Deliberately just urllib + the stdlib ssl module -- no requests/certifi, so
-there is nothing beyond PyInstaller's own built-in analysis to bundle.
-ssl.create_default_context() validates HTTPS against the Windows
-certificate store automatically.
+Deliberately just urllib -- no requests/certifi. HTTPS certificates are
+verified via truststore, i.e. by the OS's own verifier (CryptoAPI on
+Windows), not the stdlib's ssl.create_default_context(). The latter only
+enumerates root certificates already present in the Windows store, but a
+fresh Windows install ships with just a few and fetches the rest on demand
+("automatic root certificate update") -- which only CryptoAPI's own chain
+building triggers. With the stdlib context, a brand-new machine fails to
+verify GitHub's certificate until something else (e.g. a browser visit to
+GitHub) has happened to pull in the missing root.
 """
 import json
 import shutil
@@ -11,12 +16,14 @@ import ssl
 import urllib.error
 import urllib.request
 
+import truststore
+
 # GitHub's REST API requires a User-Agent header on every request, or it
 # rejects the call outright.
 _USER_AGENT = "psxhacks-updater"
 _TIMEOUT_S = 30
 
-_SSL_CONTEXT = ssl.create_default_context()
+_SSL_CONTEXT = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
 class GitHubError(Exception):

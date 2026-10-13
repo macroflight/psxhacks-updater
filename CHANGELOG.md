@@ -1,5 +1,13 @@
 # psxhacks-updater changelog
 
+## Unreleased
+
+- Fix "certificate verify failed" errors talking to GitHub on freshly
+  installed Windows machines. HTTPS is now verified by Windows' own
+  certificate verifier (via `truststore`), which fetches missing root
+  certificates on demand like a browser does, instead of only trusting
+  roots already present in the Windows certificate store.
+
 ## 0.1.2
 
 - Removed the Python venv check, its `setup_python_venv.ps1` wizard

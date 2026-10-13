@@ -39,7 +39,10 @@ end users, with no git client and no GitHub authentication required. See
   version, downloads it, and bootstraps replacing the running EXE
   (`--finish-update <old_exe_path>`).
 - `pu_github.py` -- tiny `urllib`-based GitHub REST helper shared by
-  `pu_sync.py` and `pu_selfupdate.py`.
+  `pu_sync.py` and `pu_selfupdate.py`. Verifies HTTPS via `truststore`
+  (Windows' own CryptoAPI), not `ssl.create_default_context()`: the
+  latter fails on fresh Windows installs whose root store hasn't yet
+  been populated on demand -- don't switch back.
 - `pu_gui.py` -- tkinter multi-page wizard shell: the status page (branch
   dropdown, status/progress/log, Install/Update/Reinstall/History
   buttons) and the history page (a `Treeview` of commits plus a detail
@@ -118,5 +121,6 @@ The tkinter GUI layer itself is not unit-tested (no display in CI); see
   `psxhacks-updater-v<version>-testing` (a prerelease) on `testing`;
   `pu_selfupdate.py` parses that tag prefix and uses `releases/latest`, so
   it only ever sees non-prerelease `main` builds.
-- The only third-party runtime dependency is `packaging` (also listed as
-  PyInstaller hidden imports in the spec); everything else is stdlib.
+- The only third-party runtime dependencies are `packaging` and
+  `truststore` (both also listed as PyInstaller hidden imports in the
+  spec); everything else is stdlib.
